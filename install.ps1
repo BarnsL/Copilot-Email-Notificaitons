@@ -262,11 +262,11 @@ function Write-StopHookInstructionFile {
 
     $beginMarker = '<!-- Copilot Email Notifier Stop Hook: begin -->'
     $endMarker = '<!-- Copilot Email Notifier Stop Hook: end -->'
-    $commandLines = if (@($Commands).Count -gt 0) {
-        ($Commands | ForEach-Object { "- `$_`" }) -join [Environment]::NewLine
+    if (@($Commands).Count -gt 0) {
+        $commandLines = ($Commands | ForEach-Object { '- ' + $_ }) -join [Environment]::NewLine
     }
     else {
-        "- Configure commands in the notifier installer."
+        $commandLines = '- Configure commands in the notifier installer.'
     }
 
     $block = @"
@@ -514,7 +514,8 @@ try {
         $safeComputerLabel = [System.Net.WebUtility]::HtmlEncode($cfg.computerName)
         $safeTimestamp = [System.Net.WebUtility]::HtmlEncode((Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
         $safeOs = [System.Net.WebUtility]::HtmlEncode([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)
-        $safeStopHook = [System.Net.WebUtility]::HtmlEncode((if ($cfg.stopHook.enabled) { "Enabled" } else { "Disabled" }))
+        $stopHookLabel = if ($cfg.stopHook.enabled) { 'Enabled' } else { 'Disabled' }
+        $safeStopHook = [System.Net.WebUtility]::HtmlEncode($stopHookLabel)
         $msg.Body = @"
 <div style="background:#f4f1ea;padding:24px;font-family:Segoe UI,Arial,sans-serif;color:#1f2937;">
     <div style="max-width:680px;margin:0 auto;background:#fffdf8;border:1px solid #e7dcc7;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08);">
