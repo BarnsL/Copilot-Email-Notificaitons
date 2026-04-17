@@ -8,7 +8,8 @@
 # for filesystem write activity.  When Copilot is streaming a response, the
 # .jsonl file is written to rapidly.  Once writes stop for a configurable
 # "quiet" threshold (default 8 seconds), the script considers the response
-# complete and sends an email notification via Gmail SMTP.
+# complete, optionally runs the stop-hook verification gate, and then sends an
+# email notification via Gmail SMTP.
 #
 # THREE-LAYER DUPLICATE PREVENTION
 # --------------------------------
@@ -62,6 +63,7 @@ $ErrorActionPreference = "Stop"
 #   idleMinutes      — if user idle > this, email IS sent (they're away)
 #   smtpServer/Port  — Gmail SMTP endpoint (smtp.gmail.com:587)
 #   imapServer/Port  — Gmail IMAP endpoint (used by cleanup.ps1, not here)
+#   stopHook         — optional completion gate config (workspace + commands)
 # ============================================================================
 # Prefer user-private config outside the project folder to avoid embedding
 # personal data in source-controlled files.
@@ -92,6 +94,33 @@ if (-not (Test-Path $ConfigPath)) {
 }
 $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
+function Get-StopHookConfig {
+    param(
+        [psobject]$Config
+    )
+
+    $hook = $null
+    if ($Config -and ($Config.PSObject.Properties.Name -contains 'stopHook')) {
+        $hook = $Config.stopHook
+    }
+
+    $commands = @()
+    if ($hook -and $hook.commands) {
+        $commands = @($hook.commands | ForEach-Object {
+            if ($null -ne $_) { "$($_)".Trim() }
+        } | Where-Object { $_ })
+    }
+
+    return [PSCustomObject]@{
+        enabled         = [bool]($hook -and $hook.enabled)
+        workspacePath   = if ($hook -and $hook.workspacePath) { "$($hook.workspacePath)" } else { "" }
+        commands        = $commands
+        timeoutSeconds  = if ($hook -and $hook.timeoutSeconds) { [int]$hook.timeoutSeconds } else { 900 }
+        notifyOnFailure = if ($hook -and $null -ne $hook.notifyOnFailure) { [bool]$hook.notifyOnFailure } else { $true }
+        instructionFile = if ($hook -and $hook.instructionFile) { "$($hook.instructionFile)" } else { "" }
+    }
+}
+
 # Unpack config into script-level variables for readability
 $To            = $cfg.email           # Recipient email address
 $From          = $cfg.email           # Sender address (same Gmail account)
@@ -102,6 +131,7 @@ $computerName  = $cfg.computerName    # e.g. "Workstation-01"
 $smtpServer    = $cfg.smtpServer      # "smtp.gmail.com"
 $smtpPort      = $cfg.smtpPort        # 587 (STARTTLS)
 $ProjectRepoUrl = "https://github.com/BarnsL/Copilot-Email-Notificaitons"
+$stopHookConfig = Get-StopHookConfig -Config $cfg
 
 # Guard: if the user hasn't edited the placeholder values, refuse to run
 if ($To -eq '[EMAIL]' -or $computerName -eq '[PC Name]') {
@@ -215,6 +245,15 @@ Write-Host "Watching : $SessionDir"
 Write-Host "Email to : $To"
 Write-Host "Quiet threshold: ${QuietSeconds}s after last write"
 Write-Host "Idle threshold : ${IdleMinutes}min (skip email if user is active)"
+if ($stopHookConfig.enabled) {
+    Write-Host "Stop hook      : enabled"
+    Write-Host "  Workspace    : $($stopHookConfig.workspacePath)"
+    Write-Host "  Commands     : $(@($stopHookConfig.commands).Count)"
+    Write-Host "  Failure email: $($stopHookConfig.notifyOnFailure)"
+}
+else {
+    Write-Host "Stop hook      : disabled"
+}
 Write-Host "Press Ctrl+C to stop." -ForegroundColor Yellow
 Write-Host ""
 
@@ -396,7 +435,8 @@ function Get-SessionTitle {
 # ============================================================================
 function Send-NotificationEmail {
     param(
-        [string]$SessionFile   # Full path to the .jsonl file that completed
+        [string]$SessionFile,  # Full path to the .jsonl file that completed
+        [psobject]$StopHookResult = $null
     )
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     # Extract just the filename (minus extension) as a session identifier
@@ -434,6 +474,21 @@ function Send-NotificationEmail {
                 $safeComputerLabel = [System.Net.WebUtility]::HtmlEncode($computerName)
                 $safeTimestamp = [System.Net.WebUtility]::HtmlEncode($ts)
                 $safeSessionId = [System.Net.WebUtility]::HtmlEncode($sessionName)
+                $stopHookRows = ""
+                if ($StopHookResult -and $StopHookResult.enabled) {
+                    $safeStopHookStatus = [System.Net.WebUtility]::HtmlEncode("Passed ($(@($StopHookResult.commands).Count) command(s))")
+                    $safeWorkspacePath = [System.Net.WebUtility]::HtmlEncode([string]$StopHookResult.workspacePath)
+                    $stopHookRows = @"
+                <tr>
+                    <td style="padding:10px 12px;border-top:1px solid #efe6d6;font-weight:600;color:#5b6470;">Stop Hook</td>
+                    <td style="padding:10px 12px;border-top:1px solid #efe6d6;">$safeStopHookStatus</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;font-weight:600;color:#5b6470;">Workspace</td>
+                    <td style="padding:10px 12px;">$safeWorkspacePath</td>
+                </tr>
+"@
+                }
                 $mail.Body = @"
 <div style="background:#f4f1ea;padding:24px;font-family:Segoe UI,Arial,sans-serif;color:#1f2937;">
     <div style="max-width:680px;margin:0 auto;background:#fffdf8;border:1px solid #e7dcc7;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08);">
@@ -460,6 +515,7 @@ function Send-NotificationEmail {
                     <td style="padding:10px 12px;font-weight:600;color:#5b6470;">Session ID</td>
                     <td style="padding:10px 12px;">$safeSessionId</td>
                 </tr>
+                $stopHookRows
             </table>
             <div style="margin-top:20px;padding:16px;border:1px solid #efe6d6;border-radius:12px;background:#fcfaf5;">
                 <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#7b6d57;margin-bottom:6px;">Project Repository</div>
@@ -483,6 +539,185 @@ function Send-NotificationEmail {
     }
 }
 
+function Send-StopHookFailureEmail {
+    param(
+        [string]$SessionFile,
+        [psobject]$StopHookResult
+    )
+
+    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $sessionName  = [System.IO.Path]::GetFileNameWithoutExtension($SessionFile)
+    $sessionTitle = Get-SessionTitle -SessionFile $SessionFile
+    $failedCommand = $StopHookResult.commands | Where-Object { -not $_.passed } | Select-Object -First 1
+    $failedCommandText = if ($failedCommand) { $failedCommand.command } else { $StopHookResult.summary }
+
+    try {
+        $smtp = New-Object System.Net.Mail.SmtpClient($smtpServer, $smtpPort)
+        $smtp.EnableSsl    = $true
+        $smtp.Credentials  = New-Object System.Net.NetworkCredential($From, $appPassword)
+
+        $mail = New-Object System.Net.Mail.MailMessage
+        $mail.From = $From
+        $mail.To.Add($To)
+        $mail.Subject = "[$computerName] Copilot Stop Hook Failed"
+        $mail.Headers.Add("List-ID", "<copilot-notify.$safeComputerName.local>")
+        $mail.Headers.Add("List-Unsubscribe", "<mailto:$($From)?subject=unsubscribe>")
+        $mail.Headers.Add("Precedence", "bulk")
+        $mail.Headers.Add("Auto-Submitted", "auto-generated")
+        $mail.Headers.Add("Feedback-ID", "copilot-stop-hook:$($safeComputerName):vscode")
+
+        $mail.IsBodyHtml = $true
+        $mail.SubjectEncoding = [System.Text.Encoding]::UTF8
+        $mail.BodyEncoding = [System.Text.Encoding]::UTF8
+
+        $safeSessionTitle = [System.Net.WebUtility]::HtmlEncode($sessionTitle)
+        $safeComputerLabel = [System.Net.WebUtility]::HtmlEncode($computerName)
+        $safeTimestamp = [System.Net.WebUtility]::HtmlEncode($ts)
+        $safeSessionId = [System.Net.WebUtility]::HtmlEncode($sessionName)
+        $safeSummary = [System.Net.WebUtility]::HtmlEncode([string]$StopHookResult.summary)
+        $safeWorkspacePath = [System.Net.WebUtility]::HtmlEncode([string]$StopHookResult.workspacePath)
+        $safeFailedCommand = [System.Net.WebUtility]::HtmlEncode([string]$failedCommandText)
+        $safeResultFile = [System.Net.WebUtility]::HtmlEncode([string]$StopHookResult.resultFile)
+        $safeLogFile = [System.Net.WebUtility]::HtmlEncode([string]$StopHookResult.logFile)
+        $safeContinueFile = [System.Net.WebUtility]::HtmlEncode([string]$StopHookResult.continueFile)
+        $mail.Body = @"
+<div style="background:#f4f1ea;padding:24px;font-family:Segoe UI,Arial,sans-serif;color:#1f2937;">
+    <div style="max-width:680px;margin:0 auto;background:#fffdf8;border:1px solid #e7dcc7;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08);">
+        <div style="background:#7a2e1f;color:#ffffff;padding:20px 24px;">
+            <div style="font-size:12px;letter-spacing:0.12em;text-transform:uppercase;opacity:0.85;">Copilot Email Notifications</div>
+            <h1 style="margin:8px 0 0;font-size:24px;line-height:1.2;">Continue Required</h1>
+        </div>
+        <div style="padding:24px;">
+            <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">A Copilot Chat response reached the quiet window, but the configured stop-hook checks did not pass. External tooling cannot hard-block Copilot Chat from ending, so this is the failure signal to continue the task.</p>
+            <table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.5;">
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;width:180px;font-weight:600;color:#5b6470;">Computer</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeComputerLabel</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Session Title</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeSessionTitle</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Failed Check</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeFailedCommand</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Summary</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeSummary</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Workspace</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeWorkspacePath</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Time</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeTimestamp</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Session ID</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeSessionId</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Result File</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeResultFile</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Log File</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeLogFile</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;font-weight:600;color:#5b6470;">Continue File</td>
+                    <td style="padding:10px 12px;">$safeContinueFile</td>
+                </tr>
+            </table>
+            <div style="margin-top:20px;padding:16px;border:1px solid #efe6d6;border-radius:12px;background:#fcfaf5;">
+                <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#7b6d57;margin-bottom:6px;">Project Repository</div>
+                <a href="$ProjectRepoUrl" style="color:#1f3a5f;text-decoration:none;font-weight:600;">$ProjectRepoUrl</a>
+            </div>
+        </div>
+        <div style="padding:18px 24px;background:#f7f2e8;border-top:1px solid #e7dcc7;font-size:12px;color:#6b7280;">
+            &copy; Purple Industries
+        </div>
+    </div>
+</div>
+"@
+        $smtp.Send($mail)
+        $smtp.Dispose()
+        $mail.Dispose()
+        $script:emailCount++
+        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Failure email #$($script:emailCount) sent to $To" -ForegroundColor Yellow
+    }
+    catch {
+        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Failure email FAILED: $_" -ForegroundColor Red
+    }
+}
+
+function Get-PwshExecutablePath {
+    if ($IsWindows) {
+        return (Join-Path $PSHOME "pwsh.exe")
+    }
+    return (Join-Path $PSHOME "pwsh")
+}
+
+function Invoke-StopHook {
+    param(
+        [string]$SessionFile
+    )
+
+    if (-not $stopHookConfig.enabled) {
+        return [PSCustomObject]@{
+            enabled = $false
+            passed  = $true
+            skipped = $true
+            summary = 'Stop hook disabled.'
+        }
+    }
+
+    $stopHookScript = Join-Path $PSScriptRoot "stop-hook.ps1"
+    if (-not (Test-Path $stopHookScript)) {
+        return [PSCustomObject]@{
+            enabled       = $true
+            passed        = $false
+            workspacePath = $stopHookConfig.workspacePath
+            commands      = @()
+            resultFile    = ""
+            continueFile  = ""
+            logFile       = ""
+            summary       = "stop-hook.ps1 not found next to watch.ps1."
+        }
+    }
+
+    try {
+        $output = & (Get-PwshExecutablePath) -NoProfile -ExecutionPolicy Bypass -File $stopHookScript -ConfigPath $ConfigPath -SessionFile $SessionFile
+        $rawOutput = ($output | ForEach-Object { "$_" }) -join "`n"
+        if (-not $rawOutput) {
+            throw "Stop hook returned no JSON output."
+        }
+
+        $result = $rawOutput | ConvertFrom-Json -ErrorAction Stop
+        if (-not ($result.PSObject.Properties.Name -contains 'enabled')) {
+            $result | Add-Member -NotePropertyName enabled -NotePropertyValue $true -Force
+        }
+        if (-not ($result.PSObject.Properties.Name -contains 'summary')) {
+            $result | Add-Member -NotePropertyName summary -NotePropertyValue "Stop hook completed." -Force
+        }
+        return $result
+    }
+    catch {
+        return [PSCustomObject]@{
+            enabled       = $true
+            passed        = $false
+            workspacePath = $stopHookConfig.workspacePath
+            commands      = @()
+            resultFile    = ""
+            continueFile  = ""
+            logFile       = ""
+            summary       = $_.Exception.Message
+        }
+    }
+}
+
 # ============================================================================
 # MAIN WATCH LOOP
 # ============================================================================
@@ -494,7 +729,8 @@ function Send-NotificationEmail {
 #   2. Finds the most recently written one
 #   3. If its LastWriteTime is newer than what we've seen → activity detected
 #   4. Once activity stops for $QuietSeconds → run the 3-layer dedup gate
-#   5. If all checks pass → send the email
+#   5. If configured, run the stop-hook completion checks
+#   6. If the remaining gates pass → send success or failure email as needed
 #
 # FileSystemWatcher is created primarily to keep the watcher handle alive
 # and so the WatcherPath is monitored by the OS; the actual detection uses
@@ -560,16 +796,43 @@ try {
                     Write-Host "[$(Get-Date -Format 'HH:mm:ss')] File updated but no new content. Skipping." -ForegroundColor DarkGray
                 }
                 else {
+                    $stopHookResult = Invoke-StopHook -SessionFile $changedFile
+                    if ($stopHookResult.enabled) {
+                        if ($stopHookResult.passed) {
+                            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Stop hook passed."
+                        }
+                        else {
+                            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Stop hook failed: $($stopHookResult.summary)" -ForegroundColor Red
+                            if ($stopHookResult.continueFile) {
+                                Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Continue file: $($stopHookResult.continueFile)" -ForegroundColor DarkYellow
+                            }
+                        }
+                    }
+
                     # DEDUP LAYER 3: Idle detection
                     # If the user is actively at their machine (idle time < threshold),
-                    # they're watching the response live → no need for email.
+                    # they are already present for the result and can inspect any
+                    # stop-hook artifacts locally.
                     $idleMins = Get-IdleMinutes
-                    if ($idleMins -ge $IdleMinutes) {
-                        # User is idle/away — send the email
+                    if ($stopHookResult.enabled -and -not $stopHookResult.passed) {
+                        if ($idleMins -ge $IdleMinutes) {
+                            if ($stopHookConfig.notifyOnFailure) {
+                                Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Stop hook failed and user is idle ($([math]::Round($idleMins,1))min). Sending failure email..." -ForegroundColor Yellow
+                                Send-StopHookFailureEmail -SessionFile $changedFile -StopHookResult $stopHookResult
+                            }
+                            else {
+                                Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Stop hook failed but failure emails are disabled." -ForegroundColor DarkGray
+                            }
+                        }
+                        else {
+                            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Stop hook failed but user active (idle $([math]::Round($idleMins,1))min < ${IdleMinutes}min). Skipping email." -ForegroundColor DarkGray
+                        }
+                    }
+                    elseif ($idleMins -ge $IdleMinutes) {
                         Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Chat complete (${QuietSeconds}s quiet, idle $([math]::Round($idleMins,1))min). Sending email..." -ForegroundColor Cyan
-                        Send-NotificationEmail -SessionFile $changedFile
-                    } else {
-                        # User is active — skip
+                        Send-NotificationEmail -SessionFile $changedFile -StopHookResult $stopHookResult
+                    }
+                    else {
                         Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Chat complete but user active (idle $([math]::Round($idleMins,1))min < ${IdleMinutes}min). Skipping email." -ForegroundColor DarkGray
                     }
                 }

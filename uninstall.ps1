@@ -28,6 +28,8 @@
 # │          │ Note: does NOT auto-remove lines added to shell RC files   │
 # ├──────────┼──────────────────────────────────────────────────────────────┤
 # │ All      │ .vscode/tasks.json created by install.ps1                  │
+# │          │ (optional) managed stop-hook instruction block             │
+# │          │ (optional) .copilot-stop-hook workspace state folder       │
 # └──────────┴──────────────────────────────────────────────────────────────┘
 #
 # USAGE
@@ -41,6 +43,85 @@ $ErrorActionPreference = "Stop"
 
 # $PSScriptRoot = the directory containing this .ps1 file
 $root = $PSScriptRoot
+
+function Get-PrivateConfigPath {
+    if ($IsWindows -and $env:APPDATA) {
+        return (Join-Path $env:APPDATA "CopilotEmailNotifier\config.json")
+    }
+    elseif ($IsMacOS) {
+        return "$HOME/Library/Application Support/CopilotEmailNotifier/config.json"
+    }
+    return "$HOME/.config/copilot-email-notifier/config.json"
+}
+
+function Prompt-YesNo {
+    param(
+        [string]$Prompt,
+        [bool]$Default = $false
+    )
+
+    $suffix = if ($Default) { "[Y/n]" } else { "[y/N]" }
+    while ($true) {
+        $response = Read-Host "$Prompt $suffix"
+        if (-not $response) {
+            return $Default
+        }
+
+        switch ($response.Trim().ToLowerInvariant()) {
+            'y' { return $true }
+            'yes' { return $true }
+            'n' { return $false }
+            'no' { return $false }
+        }
+
+        Write-Host "Please enter y or n." -ForegroundColor Yellow
+    }
+}
+
+function Remove-ManagedTextBlock {
+    param(
+        [string]$Path,
+        [string]$BeginMarker,
+        [string]$EndMarker
+    )
+
+    if (-not (Test-Path $Path)) {
+        return $false
+    }
+
+    $content = Get-Content $Path -Raw
+    $pattern = "(?s)\s*" + [regex]::Escape($BeginMarker) + ".*?" + [regex]::Escape($EndMarker) + "\s*"
+    $updated = [regex]::Replace($content, $pattern, [Environment]::NewLine, 1)
+
+    if ($updated.Trim()) {
+        Set-Content -Path $Path -Value ($updated.Trim() + [Environment]::NewLine) -Encoding UTF8
+    }
+    else {
+        Remove-Item $Path -Force
+    }
+
+    return $true
+}
+
+function Remove-StopHookGitExclude {
+    param(
+        [string]$WorkspacePath
+    )
+
+    $excludePath = Join-Path (Join-Path $WorkspacePath ".git") "info\exclude"
+    if (-not (Test-Path $excludePath)) {
+        return $false
+    }
+
+    $lines = Get-Content $excludePath
+    $filtered = @($lines | Where-Object { $_.Trim() -ne '.copilot-stop-hook/' })
+    if ($filtered.Count -eq $lines.Count) {
+        return $false
+    }
+
+    Set-Content -Path $excludePath -Value $filtered -Encoding UTF8
+    return $true
+}
 
 # ============================================================================
 # BANNER
@@ -79,8 +160,7 @@ if ($IsWindows) {
     # We ask before removing it because the user may have other tools using it.
     $existing = [System.Environment]::GetEnvironmentVariable("GMAIL_APP_PASSWORD", "User")
     if ($existing) {
-        $remove = Read-Host "Remove stored GMAIL_APP_PASSWORD from environment? [y/N]"
-        if ($remove -eq 'y') {
+        if (Prompt-YesNo -Prompt "Remove stored GMAIL_APP_PASSWORD from environment?" -Default $false) {
             # Setting to $null removes the variable from the User scope registry
             [System.Environment]::SetEnvironmentVariable("GMAIL_APP_PASSWORD", $null, "User")
             Write-Host "Environment variable removed." -ForegroundColor Green
@@ -108,8 +188,7 @@ elseif ($IsMacOS) {
     # ---- Optionally remove Keychain entry ----
     # `security delete-generic-password` removes the stored app password
     # from the login keychain.
-    $remove = Read-Host "Remove stored password from macOS Keychain? [y/N]"
-    if ($remove -eq 'y') {
+    if (Prompt-YesNo -Prompt "Remove stored password from macOS Keychain?" -Default $false) {
         & security delete-generic-password -a "copilot-notifier" -s "GMAIL_APP_PASSWORD" 2>$null
         Write-Host "Keychain entry removed." -ForegroundColor Green
     }
@@ -152,8 +231,7 @@ else {
     # ~/.copilot-notifier-env contains the app password (chmod 600)
     $envFile = "$HOME/.copilot-notifier-env"
     if (Test-Path $envFile) {
-        $remove = Read-Host "Remove stored password from $envFile? [y/N]"
-        if ($remove -eq 'y') {
+        if (Prompt-YesNo -Prompt "Remove stored password from $envFile?" -Default $false) {
             Remove-Item $envFile -Force
             Write-Host "Env file removed." -ForegroundColor Green
         }
@@ -173,6 +251,47 @@ if (Test-Path $taskFile) { Remove-Item $taskFile -Force }
 $vscodeDir = Join-Path $root ".vscode"
 if ((Test-Path $vscodeDir) -and -not (Get-ChildItem $vscodeDir)) {
     Remove-Item $vscodeDir -Force
+}
+
+# ============================================================================
+# OPTIONAL STOP-HOOK CLEANUP
+# ============================================================================
+$configPath = Get-PrivateConfigPath
+if (Test-Path $configPath) {
+    try {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json
+        if ($cfg.stopHook) {
+            $workspacePath = if ($cfg.stopHook.workspacePath) { "$($cfg.stopHook.workspacePath)" } else { "" }
+            $instructionFile = if ($cfg.stopHook.instructionFile) { "$($cfg.stopHook.instructionFile)" } else { "" }
+
+            if ($instructionFile -and (Test-Path $instructionFile)) {
+                if (Prompt-YesNo -Prompt "Remove the managed stop-hook Copilot instructions block from $instructionFile?" -Default $false) {
+                    if (Remove-ManagedTextBlock -Path $instructionFile -BeginMarker '<!-- Copilot Email Notifier Stop Hook: begin -->' -EndMarker '<!-- Copilot Email Notifier Stop Hook: end -->') {
+                        Write-Host "Removed managed stop-hook instructions." -ForegroundColor Green
+                    }
+                }
+            }
+
+            if ($workspacePath) {
+                $stateDir = Join-Path $workspacePath ".copilot-stop-hook"
+                if (Test-Path $stateDir) {
+                    if (Prompt-YesNo -Prompt "Remove stop-hook state folder $stateDir ?" -Default $false) {
+                        Remove-Item $stateDir -Recurse -Force
+                        Write-Host "Removed stop-hook state folder." -ForegroundColor Green
+                    }
+                }
+
+                if (Prompt-YesNo -Prompt "Remove the local .copilot-stop-hook Git exclude entry from $workspacePath ?" -Default $false) {
+                    if (Remove-StopHookGitExclude -WorkspacePath $workspacePath) {
+                        Write-Host "Removed local Git exclude entry." -ForegroundColor Green
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        Write-Host "Skipped stop-hook cleanup prompts because the private config could not be read." -ForegroundColor Yellow
+    }
 }
 
 # ============================================================================

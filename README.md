@@ -7,6 +7,9 @@ It provides three pieces of functionality:
 - A 5-minute idle monitor so emails are skipped while you are actively using the machine
 - Hourly Gmail cleanup for notification emails, with subject/date safeguards
 
+It also optionally provides a fourth workflow feature:
+- A stop-hook completion gate that runs your own commands such as `npm test`, `npm run lint`, or `pytest` before the watcher treats a Copilot task as truly complete
+
 This project is standalone and separate from any pentesting or hackathon tooling.
 
 It also does not use Meerkat. Notification delivery is done directly with:
@@ -31,9 +34,10 @@ pwsh -File install.ps1
 The installer will:
 1. Ask for your **Gmail address**
 2. Ask for a **name for this computer** (shown in email subject)
-3. Ask for a **Gmail App Password** (see below)
-4. Send a test email to confirm it works
-5. Register auto-start on login + hourly email cleanup
+3. Optionally enable a **stop hook** for VS Code and Copilot Chat completion checks
+4. Ask for a **Gmail App Password** (see below)
+5. Send a test email to confirm it works
+6. Register auto-start on login + hourly email cleanup
 
 ## Gmail App Password Setup
 
@@ -54,6 +58,18 @@ The installer will:
   3. **Idle detection** — skips email if user is actively at the machine
 - Sends mail directly with Gmail SMTP; no Meerkat dependency or relay tier
 - Sends a presentable HTML email with the computer name, session title, timestamp, a repository link, and a `© Purple Industries` footer
+
+**Stop hook** (`stop-hook.ps1`):
+- Optional completion gate configured by `install.ps1`
+- Runs your own verification commands inside a target workspace after Copilot Chat goes quiet
+- Writes `.copilot-stop-hook/last-result.json` and `.copilot-stop-hook/last-run.log` in that workspace
+- Writes `.copilot-stop-hook/continue-required.md` on failure so Copilot instructions and the user have a simple local "not done yet" signal
+- Suppresses the normal success email when checks fail
+- Can send a separate failure email if you are idle and `notifyOnFailure` is enabled
+- Generates or updates `.github/copilot-instructions.md` on request so Copilot Chat treats the stop-hook artifacts as the completion gate for that workspace
+
+**Important limitation**:
+- VS Code and GitHub Copilot Chat do not expose a public hard stop-hook API that an external PowerShell tool can block. This project implements the practical version instead: local command checks, result artifacts, and optional Copilot instructions that keep the completion standard explicit.
 
 **Cleanup** (`cleanup.ps1`):
 - Connects to Gmail via IMAP (SSL, port 993)
@@ -82,6 +98,7 @@ Result:
 |------|---------|
 | `config.json` | Template file (placeholders only, safe to share) |
 | `watch.ps1` | The main watcher script (thoroughly annotated) |
+| `stop-hook.ps1` | Optional completion gate for tests/lint/custom commands |
 | `cleanup.ps1` | Email cleanup via IMAP (thoroughly annotated) |
 | `install.ps1` | Cross-platform setup wizard (thoroughly annotated) |
 | `uninstall.ps1` | Clean removal of all registered services (thoroughly annotated) |
@@ -91,6 +108,9 @@ Result:
 ```sh
 # Start the watcher manually
 pwsh -File watch.ps1
+
+# Run the stop hook manually with the configured workspace/commands
+pwsh -File stop-hook.ps1
 
 # Run cleanup manually
 pwsh -File cleanup.ps1
@@ -113,7 +133,18 @@ Edit `config.json`:
   "smtpServer": "smtp.gmail.com",
   "smtpPort": 587,
   "imapServer": "imap.gmail.com",
-  "imapPort": 993
+  "imapPort": 993,
+  "stopHook": {
+    "enabled": false,
+    "workspacePath": "C:/path/to/workspace",
+    "commands": [
+      "npm test",
+      "npm run lint"
+    ],
+    "timeoutSeconds": 900,
+    "notifyOnFailure": true,
+    "instructionFile": "C:/path/to/workspace/.github/copilot-instructions.md"
+  }
 }
 ```
 
@@ -136,6 +167,17 @@ At runtime, scripts prefer a private user config path and fall back to project `
 | `smtpPort` | SMTP port (STARTTLS) | 587 |
 | `imapServer` | Gmail IMAP server | imap.gmail.com |
 | `imapPort` | IMAP port (implicit SSL) | 993 |
+| `stopHook.enabled` | Enables the completion gate | false |
+| `stopHook.workspacePath` | Repo/workspace where commands should run | empty |
+| `stopHook.commands` | Commands run in order until one fails | empty |
+| `stopHook.timeoutSeconds` | Per-command timeout in seconds | 900 |
+| `stopHook.notifyOnFailure` | Send failure email when idle | true |
+| `stopHook.instructionFile` | Records the `.github/copilot-instructions.md` path when the installer generates it | empty |
+
+When stop hook is enabled:
+- The watcher writes result artifacts into `<workspace>/.copilot-stop-hook/`
+- The installer adds `.copilot-stop-hook/` to that workspace's local `.git/info/exclude` when it detects a Git repo
+- The normal "Copilot Chat Complete" email is only sent after the stop-hook passes
 
 ## Platform Details
 
@@ -198,4 +240,5 @@ pwsh -File uninstall.ps1
 ```
 
 This removes all auto-start entries, scheduled tasks/timers, and optionally the stored password.
+If you enabled stop hook, uninstall also offers to remove the managed Copilot instructions block, the workspace `.copilot-stop-hook` folder, and the local Git exclude entry.
 The project folder itself is left intact for you to remove manually.

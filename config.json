@@ -7,5 +7,13 @@
   "smtpServer": "smtp.gmail.com",
   "smtpPort": 587,
   "imapServer": "imap.gmail.com",
-  "imapPort": 993
+  "imapPort": 993,
+  "stopHook": {
+    "enabled": false,
+    "workspacePath": "",
+    "commands": [],
+    "timeoutSeconds": 900,
+    "notifyOnFailure": true,
+    "instructionFile": ""
+  }
 }

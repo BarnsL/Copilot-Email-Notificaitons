@@ -12,11 +12,12 @@
 # -----------------------
 # 1. Prompts for Gmail address (if config.json has placeholder)
 # 2. Prompts for computer name (defaults to hostname)
-# 3. Prompts for Gmail App Password and stores it securely per-platform
-# 4. Sends a test email to verify credentials work
-# 5. Registers the watcher (watch.ps1) to auto-start on login
-# 6. Registers the cleanup (cleanup.ps1) to run hourly
-# 7. Creates a VS Code tasks.json for manual launch within VS Code
+# 3. Optionally enables stop-hook checks for VS Code/Copilot Chat completion
+# 4. Prompts for Gmail App Password and stores it securely per-platform
+# 5. Sends a test email to verify credentials work
+# 6. Registers the watcher (watch.ps1) to auto-start on login
+# 7. Registers the cleanup (cleanup.ps1) to run hourly
+# 8. Creates a VS Code tasks.json for manual launch within VS Code
 #
 # DEPENDENCY MODEL
 # ----------------
@@ -93,6 +94,202 @@ function Get-PrivateConfigPath {
     return "$HOME/.config/copilot-email-notifier/config.json"
 }
 
+function Initialize-NotifierConfig {
+    param(
+        [psobject]$Config
+    )
+
+    if (-not ($Config.PSObject.Properties.Name -contains 'stopHook') -or -not $Config.stopHook) {
+        $Config | Add-Member -NotePropertyName stopHook -NotePropertyValue ([PSCustomObject]@{
+            enabled         = $false
+            workspacePath   = ""
+            commands        = @()
+            timeoutSeconds  = 900
+            notifyOnFailure = $true
+            instructionFile = ""
+        }) -Force
+    }
+
+    $stopHook = $Config.stopHook
+    if (-not ($stopHook.PSObject.Properties.Name -contains 'enabled')) {
+        $stopHook | Add-Member -NotePropertyName enabled -NotePropertyValue $false -Force
+    }
+    if (-not ($stopHook.PSObject.Properties.Name -contains 'workspacePath')) {
+        $stopHook | Add-Member -NotePropertyName workspacePath -NotePropertyValue "" -Force
+    }
+    if (-not ($stopHook.PSObject.Properties.Name -contains 'commands')) {
+        $stopHook | Add-Member -NotePropertyName commands -NotePropertyValue @() -Force
+    }
+    if (-not ($stopHook.PSObject.Properties.Name -contains 'timeoutSeconds')) {
+        $stopHook | Add-Member -NotePropertyName timeoutSeconds -NotePropertyValue 900 -Force
+    }
+    if (-not ($stopHook.PSObject.Properties.Name -contains 'notifyOnFailure')) {
+        $stopHook | Add-Member -NotePropertyName notifyOnFailure -NotePropertyValue $true -Force
+    }
+    if (-not ($stopHook.PSObject.Properties.Name -contains 'instructionFile')) {
+        $stopHook | Add-Member -NotePropertyName instructionFile -NotePropertyValue "" -Force
+    }
+
+    $stopHook.commands = @($stopHook.commands | ForEach-Object {
+        if ($null -ne $_) { "$($_)".Trim() }
+    } | Where-Object { $_ })
+
+    return $Config
+}
+
+function Prompt-YesNo {
+    param(
+        [string]$Prompt,
+        [bool]$Default = $false
+    )
+
+    $suffix = if ($Default) { "[Y/n]" } else { "[y/N]" }
+    while ($true) {
+        $response = Read-Host "$Prompt $suffix"
+        if (-not $response) {
+            return $Default
+        }
+
+        switch ($response.Trim().ToLowerInvariant()) {
+            'y' { return $true }
+            'yes' { return $true }
+            'n' { return $false }
+            'no' { return $false }
+        }
+
+        Write-Host "Please enter y or n." -ForegroundColor Yellow
+    }
+}
+
+function Read-StopHookCommands {
+    param(
+        [string[]]$ExistingCommands = @()
+    )
+
+    if (@($ExistingCommands).Count -gt 0) {
+        Write-Host "Current stop-hook commands:" -ForegroundColor DarkCyan
+        foreach ($existingCommand in $ExistingCommands) {
+            Write-Host "  - $existingCommand"
+        }
+    }
+
+    Write-Host "Enter stop-hook commands one per line (examples: npm test, npm run lint, pytest)." -ForegroundColor DarkCyan
+    Write-Host "Press Enter on an empty prompt when done." -ForegroundColor DarkCyan
+
+    $commands = @()
+    $index = 1
+    while ($true) {
+        $prompt = if ($index -eq 1 -and @($ExistingCommands).Count -gt 0) {
+            "Stop-hook command #$index [blank keeps current list]"
+        }
+        else {
+            "Stop-hook command #$index [blank when done]"
+        }
+
+        $command = Read-Host $prompt
+        if (-not $command) {
+            if ($commands.Count -eq 0 -and @($ExistingCommands).Count -gt 0) {
+                return @($ExistingCommands)
+            }
+            break
+        }
+
+        $commands += $command.Trim()
+        $index++
+    }
+
+    return @($commands | Where-Object { $_ })
+}
+
+function Set-ManagedTextBlock {
+    param(
+        [string]$Path,
+        [string]$BeginMarker,
+        [string]$EndMarker,
+        [string]$Block
+    )
+
+    $content = if (Test-Path $Path) { Get-Content $Path -Raw } else { "" }
+    $pattern = "(?s)" + [regex]::Escape($BeginMarker) + ".*?" + [regex]::Escape($EndMarker)
+    if ($content -match [regex]::Escape($BeginMarker)) {
+        $updated = [regex]::Replace($content, $pattern, $Block, 1)
+    }
+    elseif ($content.Trim()) {
+        $updated = $content.TrimEnd() + [Environment]::NewLine + [Environment]::NewLine + $Block + [Environment]::NewLine
+    }
+    else {
+        $updated = $Block + [Environment]::NewLine
+    }
+
+    $dir = Split-Path $Path -Parent
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force $dir | Out-Null
+    }
+    Set-Content -Path $Path -Value $updated -Encoding UTF8
+}
+
+function Add-StopHookGitExclude {
+    param(
+        [string]$WorkspacePath
+    )
+
+    $gitDir = Join-Path $WorkspacePath ".git"
+    if (-not (Test-Path $gitDir)) {
+        return
+    }
+
+    $excludePath = Join-Path $gitDir "info\exclude"
+    $excludeDir = Split-Path $excludePath -Parent
+    if (-not (Test-Path $excludeDir)) {
+        New-Item -ItemType Directory -Force $excludeDir | Out-Null
+    }
+
+    if (-not (Test-Path $excludePath)) {
+        Set-Content -Path $excludePath -Value ".copilot-stop-hook/" -Encoding UTF8
+        return
+    }
+
+    if (-not (Select-String -Path $excludePath -SimpleMatch ".copilot-stop-hook/" -Quiet)) {
+        Add-Content -Path $excludePath -Value ([Environment]::NewLine + ".copilot-stop-hook/")
+    }
+}
+
+function Write-StopHookInstructionFile {
+    param(
+        [string]$WorkspacePath,
+        [string[]]$Commands
+    )
+
+    $beginMarker = '<!-- Copilot Email Notifier Stop Hook: begin -->'
+    $endMarker = '<!-- Copilot Email Notifier Stop Hook: end -->'
+    $commandLines = if (@($Commands).Count -gt 0) {
+        ($Commands | ForEach-Object { "- `$_`" }) -join [Environment]::NewLine
+    }
+    else {
+        "- Configure commands in the notifier installer."
+    }
+
+    $block = @"
+$beginMarker
+## Copilot Completion Gate
+
+Treat `.copilot-stop-hook/last-result.json` and `.copilot-stop-hook/continue-required.md` as the local completion gate for this workspace.
+
+- If `.copilot-stop-hook/continue-required.md` exists, do not claim the task is complete.
+- Re-run the configured verification commands until `.copilot-stop-hook/last-result.json` reports `"passed": true`.
+- If checks fail, summarize the failing command output before asking the user to accept unfinished work.
+
+Configured stop-hook commands:
+$commandLines
+$endMarker
+"@
+
+    $instructionPath = Join-Path $WorkspacePath ".github\copilot-instructions.md"
+    Set-ManagedTextBlock -Path $instructionPath -BeginMarker $beginMarker -EndMarker $endMarker -Block $block
+    Add-StopHookGitExclude -WorkspacePath $WorkspacePath
+    return $instructionPath
+}
+
 $templateConfigPath = Join-Path $root "config.json"
 $configPath = Get-PrivateConfigPath
 
@@ -102,6 +299,7 @@ if (Test-Path $configPath) {
 else {
     $cfg = Get-Content $templateConfigPath -Raw | ConvertFrom-Json
 }
+$cfg = Initialize-NotifierConfig -Config $cfg
 
 # ---- Email address ----
 if ($cfg.email -eq '[EMAIL]') {
@@ -122,6 +320,70 @@ if ($cfg.computerName -eq '[PC Name]') {
     $pcName = Read-Host "Enter a name for this computer [$defaultName]"
     if (-not $pcName) { $pcName = $defaultName }
     $cfg.computerName = $pcName
+}
+
+# ---- Optional stop hook ----
+if (-not $Unattended) {
+    Write-Host ""
+    Write-Host "Optional VS Code/Copilot stop hook" -ForegroundColor Cyan
+    Write-Host "This runs your chosen verification commands before the watcher treats a chat as complete." -ForegroundColor DarkCyan
+
+    $cfg.stopHook.enabled = Prompt-YesNo -Prompt "Enable stop-hook checks before success notifications?" -Default ([bool]$cfg.stopHook.enabled)
+
+    if ($cfg.stopHook.enabled) {
+        while ($true) {
+            $workspacePrompt = if ($cfg.stopHook.workspacePath) {
+                "Enter the workspace path whose checks should run [$($cfg.stopHook.workspacePath)]"
+            }
+            else {
+                "Enter the workspace path whose checks should run"
+            }
+
+            $workspaceInput = Read-Host $workspacePrompt
+            if (-not $workspaceInput) {
+                $workspaceInput = $cfg.stopHook.workspacePath
+            }
+
+            if ($workspaceInput -and (Test-Path $workspaceInput -PathType Container)) {
+                $cfg.stopHook.workspacePath = (Resolve-Path $workspaceInput).Path
+                break
+            }
+
+            Write-Host "Enter an existing workspace directory." -ForegroundColor Yellow
+        }
+
+        $cfg.stopHook.commands = @(Read-StopHookCommands -ExistingCommands @($cfg.stopHook.commands))
+        if (@($cfg.stopHook.commands).Count -eq 0) {
+            Write-Error "Stop-hook requires at least one verification command."
+            exit 1
+        }
+
+        $timeoutDefault = if ($cfg.stopHook.timeoutSeconds) { [int]$cfg.stopHook.timeoutSeconds } else { 900 }
+        while ($true) {
+            $timeoutInput = Read-Host "Stop-hook timeout in seconds [$timeoutDefault]"
+            if (-not $timeoutInput) {
+                $cfg.stopHook.timeoutSeconds = $timeoutDefault
+                break
+            }
+            $parsedTimeout = 0
+            if ([int]::TryParse($timeoutInput, [ref]$parsedTimeout) -and $parsedTimeout -gt 0) {
+                $cfg.stopHook.timeoutSeconds = $parsedTimeout
+                break
+            }
+            Write-Host "Enter a positive whole number of seconds." -ForegroundColor Yellow
+        }
+
+        $cfg.stopHook.notifyOnFailure = Prompt-YesNo -Prompt "Send a failure email when checks fail and you are idle?" -Default ([bool]$cfg.stopHook.notifyOnFailure)
+
+        if (Prompt-YesNo -Prompt "Generate or update .github/copilot-instructions.md in that workspace?" -Default ([bool]$cfg.stopHook.instructionFile)) {
+            $cfg.stopHook.instructionFile = Write-StopHookInstructionFile -WorkspacePath $cfg.stopHook.workspacePath -Commands @($cfg.stopHook.commands)
+            Write-Host "Workspace instructions updated: $($cfg.stopHook.instructionFile)" -ForegroundColor Green
+        }
+        else {
+            $cfg.stopHook.instructionFile = ""
+            Add-StopHookGitExclude -WorkspacePath $cfg.stopHook.workspacePath
+        }
+    }
 }
 
 # Write updated config to user-private location
@@ -252,6 +514,7 @@ try {
         $safeComputerLabel = [System.Net.WebUtility]::HtmlEncode($cfg.computerName)
         $safeTimestamp = [System.Net.WebUtility]::HtmlEncode((Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
         $safeOs = [System.Net.WebUtility]::HtmlEncode([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)
+        $safeStopHook = [System.Net.WebUtility]::HtmlEncode((if ($cfg.stopHook.enabled) { "Enabled" } else { "Disabled" }))
         $msg.Body = @"
 <div style="background:#f4f1ea;padding:24px;font-family:Segoe UI,Arial,sans-serif;color:#1f2937;">
     <div style="max-width:680px;margin:0 auto;background:#fffdf8;border:1px solid #e7dcc7;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08);">
@@ -273,6 +536,10 @@ try {
                 <tr>
                     <td style="padding:10px 12px;font-weight:600;color:#5b6470;">OS</td>
                     <td style="padding:10px 12px;">$safeOs</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;font-weight:600;color:#5b6470;">Stop Hook</td>
+                    <td style="padding:10px 12px;">$safeStopHook</td>
                 </tr>
             </table>
             <div style="margin-top:20px;padding:16px;border:1px solid #efe6d6;border-radius:12px;background:#fcfaf5;">
@@ -309,6 +576,7 @@ Write-Host "Registering auto-start..." -ForegroundColor Cyan
 
 $watchScript   = Join-Path $root "watch.ps1"
 $cleanupScript = Join-Path $root "cleanup.ps1"
+$stopHookScript = Join-Path $root "stop-hook.ps1"
 
 # ============================================================================
 # WINDOWS AUTO-START
@@ -511,6 +779,14 @@ if (-not (Test-Path $vscodeDir)) { New-Item -ItemType Directory -Force $vscodeDi
       "presentation": { "reveal": "always", "panel": "dedicated" },
       "runOptions": { "runOn": "folderOpen" },
       "group": "none"
+        },
+        {
+            "label": "Run Copilot Stop Hook",
+            "type": "shell",
+            "command": "pwsh -NoProfile -File \${workspaceFolder}/stop-hook.ps1",
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "dedicated" },
+            "group": "test"
     }
   ]
 }

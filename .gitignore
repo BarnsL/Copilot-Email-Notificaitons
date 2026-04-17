@@ -1,6 +1,7 @@
 # Ignore platform-specific generated files
 .vscode/
 *.log
+.copilot-stop-hook/
 
 # Never commit secrets
 .copilot-notifier-env
