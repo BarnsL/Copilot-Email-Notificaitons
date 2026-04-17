@@ -56,6 +56,7 @@ $ErrorActionPreference = "Stop"
 
 # $PSScriptRoot = the directory containing this .ps1 file
 $root = $PSScriptRoot
+$ProjectRepoUrl = "https://github.com/BarnsL/Copilot-Email-Notificaitons"
 
 # ============================================================================
 # BANNER
@@ -227,7 +228,7 @@ else {
 # ============================================================================
 # STEP 3: SEND TEST EMAIL
 # ============================================================================
-# Verifies that the credentials are correct by sending a simple test message.
+# Verifies that the credentials are correct by sending a presentable test message.
 # Uses System.Net.Mail.SmtpClient (available in all .NET runtimes).
 # SMTP connection: smtp.gmail.com:587 with STARTTLS.
 # ============================================================================
@@ -239,14 +240,52 @@ try {
     $smtp.EnableSsl    = $true   # STARTTLS on port 587
     $smtp.Credentials  = New-Object System.Net.NetworkCredential($cfg.email, $appPassword)
 
-    # Construct a simple test message
-    $msg = New-Object System.Net.Mail.MailMessage(
-        $cfg.email,                                                         # From
-        $cfg.email,                                                         # To (same)
-        "[$($cfg.computerName)] Copilot Notifier — Setup Complete",         # Subject
-        # Body includes OS info for diagnostic purposes
-        "Copilot Chat Email Notifier is installed on $($cfg.computerName).`n`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`nOS: $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)"
-    )
+        # Construct a presentable HTML test message using the same branding/footer
+        # as the runtime notification emails.
+        $msg = New-Object System.Net.Mail.MailMessage
+        $msg.From = $cfg.email
+        $msg.To.Add($cfg.email)
+        $msg.Subject = "[$($cfg.computerName)] Copilot Notifier — Setup Complete"
+        $msg.IsBodyHtml = $true
+        $msg.SubjectEncoding = [System.Text.Encoding]::UTF8
+        $msg.BodyEncoding = [System.Text.Encoding]::UTF8
+        $safeComputerLabel = [System.Net.WebUtility]::HtmlEncode($cfg.computerName)
+        $safeTimestamp = [System.Net.WebUtility]::HtmlEncode((Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+        $safeOs = [System.Net.WebUtility]::HtmlEncode([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)
+        $msg.Body = @"
+<div style="background:#f4f1ea;padding:24px;font-family:Segoe UI,Arial,sans-serif;color:#1f2937;">
+    <div style="max-width:680px;margin:0 auto;background:#fffdf8;border:1px solid #e7dcc7;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08);">
+        <div style="background:#1f3a5f;color:#ffffff;padding:20px 24px;">
+            <div style="font-size:12px;letter-spacing:0.12em;text-transform:uppercase;opacity:0.85;">Copilot Email Notifications</div>
+            <h1 style="margin:8px 0 0;font-size:24px;line-height:1.2;">Setup Complete</h1>
+        </div>
+        <div style="padding:24px;">
+            <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">The notifier is installed and ready to watch for completed Copilot Chat responses.</p>
+            <table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.5;">
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;width:180px;font-weight:600;color:#5b6470;">Computer</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeComputerLabel</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Time</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeTimestamp</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;font-weight:600;color:#5b6470;">OS</td>
+                    <td style="padding:10px 12px;">$safeOs</td>
+                </tr>
+            </table>
+            <div style="margin-top:20px;padding:16px;border:1px solid #efe6d6;border-radius:12px;background:#fcfaf5;">
+                <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#7b6d57;margin-bottom:6px;">Project Repository</div>
+                <a href="$ProjectRepoUrl" style="color:#1f3a5f;text-decoration:none;font-weight:600;">$ProjectRepoUrl</a>
+            </div>
+        </div>
+        <div style="padding:18px 24px;background:#f7f2e8;border-top:1px solid #e7dcc7;font-size:12px;color:#6b7280;">
+            &copy; Purple Industries
+        </div>
+    </div>
+</div>
+"@
     $smtp.Send($msg)
     $smtp.Dispose()
     $msg.Dispose()

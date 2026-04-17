@@ -101,6 +101,7 @@ $IdleMinutes   = if ($cfg.idleMinutes) { $cfg.idleMinutes } else { 5 }
 $computerName  = $cfg.computerName    # e.g. "Workstation-01"
 $smtpServer    = $cfg.smtpServer      # "smtp.gmail.com"
 $smtpPort      = $cfg.smtpPort        # 587 (STARTTLS)
+$ProjectRepoUrl = "https://github.com/BarnsL/Copilot-Email-Notificaitons"
 
 # Guard: if the user hasn't edited the placeholder values, refuse to run
 if ($To -eq '[EMAIL]' -or $computerName -eq '[PC Name]') {
@@ -425,14 +426,51 @@ function Send-NotificationEmail {
         # Feedback-ID: Gmail-specific, format is campaign:sender:category
         $mail.Headers.Add("Feedback-ID", "copilot-notify:$($safeComputerName):vscode")
 
-        # Plain-text body with all useful context
-        $mail.Body = @"
-Copilot chat response has finished.
-
-Computer      : $computerName
-Session Title : $sessionTitle
-Time          : $ts
-Session ID    : $sessionName
+                # Presentable HTML body with project link and footer branding.
+                $mail.IsBodyHtml = $true
+                $mail.SubjectEncoding = [System.Text.Encoding]::UTF8
+                $mail.BodyEncoding = [System.Text.Encoding]::UTF8
+                $safeSessionTitle = [System.Net.WebUtility]::HtmlEncode($sessionTitle)
+                $safeComputerLabel = [System.Net.WebUtility]::HtmlEncode($computerName)
+                $safeTimestamp = [System.Net.WebUtility]::HtmlEncode($ts)
+                $safeSessionId = [System.Net.WebUtility]::HtmlEncode($sessionName)
+                $mail.Body = @"
+<div style="background:#f4f1ea;padding:24px;font-family:Segoe UI,Arial,sans-serif;color:#1f2937;">
+    <div style="max-width:680px;margin:0 auto;background:#fffdf8;border:1px solid #e7dcc7;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.08);">
+        <div style="background:#1f3a5f;color:#ffffff;padding:20px 24px;">
+            <div style="font-size:12px;letter-spacing:0.12em;text-transform:uppercase;opacity:0.85;">Copilot Email Notifications</div>
+            <h1 style="margin:8px 0 0;font-size:24px;line-height:1.2;">Copilot Chat Complete</h1>
+        </div>
+        <div style="padding:24px;">
+            <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">A Copilot Chat response finished streaming and the idle monitor determined you were away from the machine.</p>
+            <table style="width:100%;border-collapse:collapse;font-size:14px;line-height:1.5;">
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;width:180px;font-weight:600;color:#5b6470;">Computer</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeComputerLabel</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Session Title</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeSessionTitle</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;font-weight:600;color:#5b6470;">Time</td>
+                    <td style="padding:10px 12px;border-bottom:1px solid #efe6d6;">$safeTimestamp</td>
+                </tr>
+                <tr>
+                    <td style="padding:10px 12px;font-weight:600;color:#5b6470;">Session ID</td>
+                    <td style="padding:10px 12px;">$safeSessionId</td>
+                </tr>
+            </table>
+            <div style="margin-top:20px;padding:16px;border:1px solid #efe6d6;border-radius:12px;background:#fcfaf5;">
+                <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#7b6d57;margin-bottom:6px;">Project Repository</div>
+                <a href="$ProjectRepoUrl" style="color:#1f3a5f;text-decoration:none;font-weight:600;">$ProjectRepoUrl</a>
+            </div>
+        </div>
+        <div style="padding:18px 24px;background:#f7f2e8;border-top:1px solid #e7dcc7;font-size:12px;color:#6b7280;">
+            &copy; Purple Industries
+        </div>
+    </div>
+</div>
 "@
         $smtp.Send($mail)
         $smtp.Dispose()

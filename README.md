@@ -53,7 +53,7 @@ The installer will:
   2. **Per-file cooldown** — 60-second cooldown per file after sending
   3. **Idle detection** — skips email if user is actively at the machine
 - Sends mail directly with Gmail SMTP; no Meerkat dependency or relay tier
-- Sends an email with the computer name, session title, and timestamp
+- Sends a presentable HTML email with the computer name, session title, timestamp, a repository link, and a `© Purple Industries` footer
 
 **Cleanup** (`cleanup.ps1`):
 - Connects to Gmail via IMAP (SSL, port 993)
@@ -62,6 +62,10 @@ The installer will:
 - Deletes only items older than 24 hours
 - Uses direct IMAP commands implemented in PowerShell; no Meerkat dependency
 - Deletes them automatically via IMAP STORE + EXPUNGE
+
+**Installer test email** (`install.ps1`):
+- Sends a styled setup-confirmation email after configuration succeeds
+- Uses the same repo link and `© Purple Industries` footer as the main notification emails
 
 ## Deprecated Dependency Check
 
