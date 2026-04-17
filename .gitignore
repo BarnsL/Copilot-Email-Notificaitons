@@ -1,0 +1,6 @@
+# Ignore platform-specific generated files
+.vscode/
+*.log
+
+# Never commit secrets
+.copilot-notifier-env

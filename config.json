@@ -1,0 +1,11 @@
+{
+  "email": "[EMAIL]",
+  "computerName": "[PC Name]",
+  "quietSeconds": 8,
+  "idleMinutes": 5,
+  "cleanupMaxAgeHours": 24,
+  "smtpServer": "smtp.gmail.com",
+  "smtpPort": 587,
+  "imapServer": "imap.gmail.com",
+  "imapPort": 993
+}
