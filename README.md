@@ -9,6 +9,11 @@ It provides three pieces of functionality:
 
 This project is standalone and separate from any pentesting or hackathon tooling.
 
+It also does not use Meerkat. Notification delivery is done directly with:
+- Gmail SMTP for sending chat-complete emails
+- Gmail IMAP for cleanup of old notification emails
+- Native PowerShell/.NET APIs for the idle monitor and scheduler setup
+
 ## Prerequisites
 
 - **PowerShell 7+** (`pwsh`) — [Install](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell)
@@ -47,6 +52,7 @@ The installer will:
   1. **Line-count check** — skips metadata-only rewrites (no new JSONL lines)
   2. **Per-file cooldown** — 60-second cooldown per file after sending
   3. **Idle detection** — skips email if user is actively at the machine
+- Sends mail directly with Gmail SMTP; no Meerkat dependency or relay tier
 - Sends an email with the computer name, session title, and timestamp
 
 **Cleanup** (`cleanup.ps1`):
@@ -54,7 +60,17 @@ The installer will:
 - Searches for emails whose subject contains both "Copilot" and "Complete"
 - Applies a protected floor date of 04/01/2026 (never deletes earlier mail)
 - Deletes only items older than 24 hours
+- Uses direct IMAP commands implemented in PowerShell; no Meerkat dependency
 - Deletes them automatically via IMAP STORE + EXPUNGE
+
+## Deprecated Dependency Check
+
+This repository was audited for deprecated `meerkat` usage.
+
+Result:
+- No runtime or dependency usage of `meerkat` exists in the repository
+- No Meerkat packages, services, wrappers, or relay code are used
+- The active implementation is direct SMTP + IMAP + local idle detection only
 
 ## Files
 

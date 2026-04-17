@@ -18,6 +18,12 @@
 # 6. Registers the cleanup (cleanup.ps1) to run hourly
 # 7. Creates a VS Code tasks.json for manual launch within VS Code
 #
+# DEPENDENCY MODEL
+# ----------------
+# This installer sets up a self-contained PowerShell-based toolchain.
+# It does not install or depend on Meerkat; notifications use direct Gmail
+# SMTP and cleanup uses direct Gmail IMAP from the scripts in this repo.
+#
 # PLATFORM-SPECIFIC BEHAVIOR
 # --------------------------
 # ┌──────────┬────────────────────────┬────────────────────────┬─────────────────────┐

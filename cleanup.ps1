@@ -39,6 +39,8 @@
 # Works identically on Windows, macOS, and Linux.  Uses only .NET Standard
 # types (TcpClient, SslStream, StreamReader, StreamWriter) available in all
 # PowerShell 7+ runtimes.  No platform-specific code needed.
+# The cleanup path is also self-contained: it does not use Meerkat or any
+# external mail-processing service, only direct IMAP commands to Gmail.
 #
 # PREREQUISITES
 # - Gmail account with IMAP enabled (enabled by default on most accounts)
@@ -165,6 +167,8 @@ function Send-Imap {
 # with an IMAP client and adding a NuGet dependency for a single operation
 # is overkill.  The IMAP command subset we need is tiny:
 # LOGIN, SELECT, SEARCH, STORE, EXPUNGE, LOGOUT.
+# This also keeps the implementation independent of deprecated intermediaries
+# such as Meerkat: cleanup is performed by direct IMAP commands.
 # ============================================================================
 try {
     # ---- Step 1: TCP connection to IMAP server ----

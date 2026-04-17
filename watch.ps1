@@ -35,6 +35,8 @@
 # - Gmail account with 2-Step Verification + App Password generated
 # - GMAIL_APP_PASSWORD environment variable set (see install.ps1 / README)
 # - VS Code with GitHub Copilot Chat extension (at least one chat session)
+# - No Meerkat dependency: notification delivery is implemented directly in
+#   this script via built-in .NET SMTP classes
 #
 ##############################################################################
 
@@ -373,6 +375,8 @@ function Get-SessionTitle {
 # EMAIL SENDING
 # ============================================================================
 # Uses System.Net.Mail.SmtpClient to send via Gmail SMTP (TLS on port 587).
+# This repo does not route notifications through Meerkat or any other relay
+# layer; the watcher talks directly to Gmail using the configured account.
 #
 # EMAIL HEADERS FOR GMAIL CATEGORIZATION:
 # By default, emails from yourself to yourself land in Gmail's "Primary" tab.
